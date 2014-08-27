@@ -114,3 +114,5 @@ AUTHENTICATION_BACKENDS = (
     #'django.contrib.auth.backends.RemoteUserBackend',
 )
 
+AUTH_PROFILE_MODULE = False
+
