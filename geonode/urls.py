@@ -144,3 +144,7 @@ urlpatterns += patterns('',
                         (r'^(?P<site>[A-Za-z0-9_\-]+)/info$',
                             'geonode.maps.views.featured_map_info'),
                         )
+
+from maploom.geonode.urls import urlpatterns as maploom_urls
+
+urlpatterns += maploom_urls
