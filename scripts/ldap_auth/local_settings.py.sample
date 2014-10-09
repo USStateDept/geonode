@@ -54,7 +54,7 @@ from django_auth_ldap.config import LDAPSearch, GroupOfNamesType
 AUTH_LDAP_SERVER_URI = "ldap://testad.localhost:389"
 
 AUTH_LDAP_BIND_DN = "CN=test1,OU=Users,OU=EDIP,DC=testad,DC=localhost"
-AUTH_LDAP_BIND_PASSWORD = "1Password"
+AUTH_LDAP_BIND_PASSWORD = "password"
 
 AUTH_LDAP_USER_SEARCH = LDAPSearch("OU=Users,OU=EDIP,DC=testad,DC=localhost",
     ldap.SCOPE_SUBTREE, "(sAMAccountName=%(user)s)")
