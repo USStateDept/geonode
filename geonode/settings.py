@@ -154,10 +154,37 @@ LOGOUT_URL = '/account/logout/'
 
 # Documents application
 ALLOWED_DOCUMENT_TYPES = [
-    'doc', 'docx', 'gif', 'jpg', 'jpeg', 'ods', 'odt', 'pdf', 'png', 'ppt',
-    'rar', 'tif', 'tiff', 'txt', 'xls', 'xlsx', 'xml', 'zip',
+    'doc', 'docx', 'gif', 'jpg', 'jpeg', 'ods', 'odt', 'odp', 'pdf', 'png', 'ppt',
+    'pptx', 'rar', 'tif', 'tiff', 'txt', 'xls', 'xlsx', 'xml', 'zip', 'gz'
 ]
 MAX_DOCUMENT_SIZE = 2  # MB
+DOCUMENT_TYPE_MAP = {
+    'txt': 'text',
+    'log': 'text',
+    'doc': 'text',
+    'docx': 'text',
+    'ods': 'text',
+    'odt': 'text',
+    'xls': 'text',
+    'xlsx': 'text',
+    'xml': 'text',
+
+    'gif': 'image',
+    'jpg': 'image',
+    'jpeg': 'image',
+    'png': 'image',
+    'tif': 'image',
+    'tiff': 'image',
+
+    'odp': 'presentation',
+    'ppt': 'presentation',
+    'pptx': 'presentation',
+    'pdf': 'presentation',
+
+    'rar': 'archive',
+    'gz': 'archive',
+    'zip': 'archive',
+}
 
 
 GEONODE_APPS = (
@@ -555,19 +582,6 @@ MAP_BASELAYERS = [{
     "source": {"ptype": "gxp_mapboxsource"},
 }]
 
-if 'geonode.geoserver' in INSTALLED_APPS:
-    LOCAL_GEOSERVER = {
-        "source": {
-            "ptype": "gxp_wmscsource",
-            "url": OGC_SERVER['default']['PUBLIC_LOCATION'] + "wms",
-            "restUrl": "/gs/rest"
-        }
-    }
-    baselayers = MAP_BASELAYERS
-    MAP_BASELAYERS = [LOCAL_GEOSERVER]
-    MAP_BASELAYERS.extend(baselayers)
-
-
 SOCIAL_BUTTONS = True
 
 # Enable Licenses User Interface
@@ -678,6 +692,11 @@ LEAFLET_CONFIG = {
             'js': 'lib/js/esri-leaflet.js',
             'auto-include': True,
         },
+        'leaflet-fullscreen': {
+            'css': 'lib/css/leaflet.fullscreen.css',
+            'js': 'lib/js/Leaflet.fullscreen.min.js',
+            'auto-include': True,
+        },
     }
 }
 
@@ -703,3 +722,16 @@ try:
     from local_settings import *  # noqa
 except ImportError:
     pass
+
+# define the urls after the settings are overridden
+if 'geonode.geoserver' in INSTALLED_APPS:
+    LOCAL_GEOSERVER = {
+        "source": {
+            "ptype": "gxp_wmscsource",
+            "url": OGC_SERVER['default']['PUBLIC_LOCATION'] + "wms",
+            "restUrl": "/gs/rest"
+        }
+    }
+    baselayers = MAP_BASELAYERS
+    MAP_BASELAYERS = [LOCAL_GEOSERVER]
+    MAP_BASELAYERS.extend(baselayers)
