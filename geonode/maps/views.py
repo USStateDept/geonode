@@ -23,7 +23,6 @@ import logging
 
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ObjectDoesNotExist
-from django.core.exceptions import PermissionDenied
 from django.core.urlresolvers import reverse
 from django.http import HttpResponse, HttpResponseRedirect, HttpResponseNotAllowed, HttpResponseServerError
 from django.shortcuts import render_to_response, get_object_or_404
@@ -32,8 +31,8 @@ from django.template import RequestContext
 from django.utils.translation import ugettext as _
 from django.utils import simplejson as json
 from django.utils.html import strip_tags
-from django.template.loader import render_to_string
 from django.db.models import F
+from django.views.decorators.clickjacking import xframe_options_exempt
 
 from geonode.layers.models import Layer
 from geonode.maps.models import Map, MapLayer, MapSnapshot
@@ -43,22 +42,28 @@ from geonode.utils import DEFAULT_TITLE
 from geonode.utils import DEFAULT_ABSTRACT
 from geonode.utils import default_map_config
 from geonode.utils import resolve_object
-from geonode.utils import http_client
 from geonode.utils import layer_from_viewer_config
 from geonode.maps.forms import MapForm
 from geonode.security.views import _perms_info_json
 from geonode.base.forms import CategoryForm
 from geonode.base.models import TopicCategory
+from geonode.tasks.deletion import delete_map
 
 from geonode.documents.models import get_related_documents
 from geonode.people.forms import ProfileForm
 from geonode.utils import num_encode, num_decode
+from geonode.utils import build_social_links
 
 if 'geonode.geoserver' in settings.INSTALLED_APPS:
     # FIXME: The post service providing the map_status object
     # should be moved to geonode.geoserver.
     from geonode.geoserver.helpers import ogc_server_settings
 
+    # Use the http_client with one that knows the username
+    # and password for GeoServer's management user.
+    from geonode.geoserver.helpers import http_client, _render_thumbnail
+else:
+    from geonode.utils import http_client
 
 logger = logging.getLogger("geonode.maps.views")
 
@@ -72,31 +77,7 @@ _PERMISSION_MSG_SAVE = _("You are not permitted to save or edit this map.")
 _PERMISSION_MSG_METADATA = _(
     "You are not allowed to modify this map's metadata.")
 _PERMISSION_MSG_VIEW = _("You are not allowed to view this map.")
-
-
-def _handleThumbNail(req, obj):
-    # object will either be a map or a layer, one or the other permission must
-    # apply
-    if not req.user.has_perm(
-            'change_resourcebase',
-            obj=obj.get_self_resource()):
-        return HttpResponse(
-            render_to_string(
-                '401.html', RequestContext(
-                    req, {
-                        'error_message': _("You are not permitted to modify this object")})), status=401)
-    if req.method == 'GET':
-        return HttpResponseRedirect(obj.get_thumbnail_url())
-    elif req.method == 'POST':
-        try:
-            obj.save_thumbnail(req.body)
-            return HttpResponseRedirect(obj.get_thumbnail_url())
-        except:
-            return HttpResponse(
-                content='error saving thumbnail',
-                status=500,
-                mimetype='text/plain'
-            )
+_PERMISSION_MSG_UNKNOWN = _('An unknown error has occured.')
 
 
 def _resolve_map(request, id, permission='base.change_resourcebase',
@@ -118,9 +99,13 @@ def map_detail(request, mapid, snapshot=None, template='maps/map_detail.html'):
     '''
     The view that show details of each map
     '''
+
     map_obj = _resolve_map(request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
 
-    Map.objects.filter(id=map_obj.id).update(popular_count=F('popular_count') + 1)
+    # Update count for popularity ranking,
+    # but do not includes admins or resource owners
+    if request.user != map_obj.owner and not request.user.is_superuser:
+        Map.objects.filter(id=map_obj.id).update(popular_count=F('popular_count') + 1)
 
     if snapshot is None:
         config = map_obj.viewer_json(request.user)
@@ -129,19 +114,25 @@ def map_detail(request, mapid, snapshot=None, template='maps/map_detail.html'):
 
     config = json.dumps(config)
     layers = MapLayer.objects.filter(map=map_obj.id)
-    return render_to_response(template, RequestContext(request, {
+
+    context_dict = {
         'config': config,
         'resource': map_obj,
         'layers': layers,
         'permissions_json': _perms_info_json(map_obj),
         "documents": get_related_documents(map_obj),
-    }))
+    }
+
+    if settings.SOCIAL_ORIGINS:
+        context_dict["social_links"] = build_social_links(request, map_obj)
+
+    return render_to_response(template, RequestContext(request, context_dict))
 
 
 @login_required
 def map_metadata(request, mapid, template='maps/map_metadata.html'):
 
-    map_obj = _resolve_map(request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
+    map_obj = _resolve_map(request, mapid, 'base.change_resourcebase_metadata', _PERMISSION_MSG_VIEW)
 
     poc = map_obj.poc
 
@@ -244,30 +235,19 @@ def map_metadata(request, mapid, template='maps/map_metadata.html'):
 @login_required
 def map_remove(request, mapid, template='maps/map_remove.html'):
     ''' Delete a map, and its constituent layers. '''
-    try:
-        map_obj = _resolve_map(request, mapid, 'base.delete_resourcebase', _PERMISSION_MSG_VIEW)
+    map_obj = _resolve_map(request, mapid, 'base.delete_resourcebase', _PERMISSION_MSG_VIEW)
 
-        if request.method == 'GET':
-            return render_to_response(template, RequestContext(request, {
-                "map": map_obj
-            }))
+    if request.method == 'GET':
+        return render_to_response(template, RequestContext(request, {
+            "map": map_obj
+        }))
 
-        elif request.method == 'POST':
-            layers = map_obj.layer_set.all()
-            for layer in layers:
-                layer.delete()
-            map_obj.delete()
-
-            return HttpResponseRedirect(reverse("maps_browse"))
-
-    except PermissionDenied:
-        return HttpResponse(
-            'You are not allowed to delete this map',
-            mimetype="text/plain",
-            status=401
-        )
+    elif request.method == 'POST':
+        delete_map.delay(object_id=map_obj.id)
+        return HttpResponseRedirect(reverse("maps_browse"))
 
 
+@xframe_options_exempt
 def map_embed(
         request,
         mapid=None,
@@ -567,7 +547,7 @@ def map_download(request, mapid, template='maps/map_download.html'):
     XXX To do, remove layer status once progress id done
     This should be fix because
     """
-    map_obj = _resolve_map(request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
+    map_obj = _resolve_map(request, mapid, 'base.download_resourcebase', _PERMISSION_MSG_VIEW)
 
     map_status = dict()
     if request.method == 'POST':
@@ -621,6 +601,7 @@ def map_download(request, mapid, template='maps/map_download.html'):
                         downloadable_layers.append(lyr)
 
     return render_to_response(template, RequestContext(request, {
+        "geoserver": ogc_server_settings.PUBLIC_LOCATION,
         "map_status": map_status,
         "map": map_obj,
         "locked_layers": locked_layers,
@@ -697,11 +678,6 @@ def map_wms(request, mapid):
         return HttpResponse(json.dumps(response), mimetype="application/json")
 
     return HttpResponseNotAllowed(['PUT', 'GET'])
-
-
-def map_thumbnail(request, mapid):
-    map_obj = _resolve_map(request, mapid, 'base.view_resourcebase', _PERMISSION_MSG_VIEW)
-    return _handleThumbNail(request, map_obj)
 
 
 def maplayer_attributes(request, layername):
@@ -850,3 +826,23 @@ def ajax_url_lookup(request):
         content=json.dumps(json_dict),
         mimetype='text/plain'
     )
+
+
+def map_thumbnail(request, mapid):
+    if request.method == 'POST':
+        map_obj = _resolve_map(request, mapid)
+        try:
+            image = _render_thumbnail(request.body)
+
+            if not image:
+                return
+            filename = "map-%s-thumb.png" % map_obj.uuid
+            map_obj.save_thumbnail(filename, image)
+
+            return HttpResponse('Thumbnail saved')
+        except:
+            return HttpResponse(
+                content='error saving thumbnail',
+                status=500,
+                mimetype='text/plain'
+            )

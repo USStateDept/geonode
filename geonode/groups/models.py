@@ -30,7 +30,7 @@ class GroupProfile(models.Model):
     group = models.OneToOneField(Group)
     title = models.CharField(max_length=50)
     slug = models.SlugField(unique=True)
-    logo = models.FileField(upload_to="people_group", blank=True)
+    logo = models.ImageField(upload_to="people_group", blank=True)
     description = models.TextField()
     email = models.EmailField(
         _('email'),
@@ -134,8 +134,11 @@ class GroupProfile(models.Model):
     def join(self, user, **kwargs):
         if user == user.get_anonymous():
             raise ValueError("The invited user cannot be anonymous")
-        GroupMember(group=self, user=user, **kwargs).save()
-        user.groups.add(self.group)
+        member, created = GroupMember.objects.get_or_create(group=self, user=user, defaults=kwargs)
+        if created:
+            user.groups.add(self.group)
+        else:
+            raise ValueError("The invited user \"{0}\" is already a member".format(user.username))
 
     def invite(self, user, from_user, role="member", send=True):
         params = dict(role=role, from_user=from_user)
@@ -207,7 +210,7 @@ class GroupInvitation(models.Model):
             ("accepted", _("Accepted")),
             ("declined", _("Declined")),
         ),
-        default = "sent",
+        default="sent",
     )
     created = models.DateTimeField(default=datetime.datetime.now)
 

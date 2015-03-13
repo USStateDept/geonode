@@ -23,13 +23,19 @@ from django.utils.translation import ugettext as _
 from django.core.urlresolvers import reverse
 from django.contrib.auth.models import AbstractUser
 from django.db.models import signals
+from django.conf import settings
 
 from taggit.managers import TaggableManager
 
 from geonode.base.enumerations import COUNTRIES
 from geonode.groups.models import GroupProfile
 
+from account.models import EmailAddress
+
 from .utils import format_address
+
+if 'notification' in settings.INSTALLED_APPS:
+    from notification import models as notification
 
 
 class Profile(AbstractUser):
@@ -138,10 +144,22 @@ def profile_post_save(instance, sender, **kwargs):
     instance.groups.add(anon_group)
     # keep in sync Profile email address with Account email address
     if instance.email not in [u'', '', None] and not kwargs.get('raw', False):
-        emailaddress, created = instance.emailaddress_set.get_or_create(user=instance, primary=True)
-        if created or not emailaddress.email == instance.email:
-            emailaddress.email = instance.email
-            emailaddress.save()
+        EmailAddress.objects.filter(user=instance, primary=True).update(email=instance.email)
 
 
+def email_post_save(instance, sender, **kw):
+    if instance.primary:
+        Profile.objects.filter(id=instance.user.pk).update(email=instance.email)
+
+
+def profile_pre_save(instance, sender, **kw):
+    matching_profiles = Profile.objects.filter(id=instance.id)
+    if matching_profiles.count() == 0:
+        return
+    if instance.is_active and not matching_profiles.get().is_active and \
+            'notification' in settings.INSTALLED_APPS:
+        notification.send([instance, ], "account_active")
+
+signals.pre_save.connect(profile_pre_save, sender=Profile)
 signals.post_save.connect(profile_post_save, sender=Profile)
+signals.post_save.connect(email_post_save, sender=EmailAddress)

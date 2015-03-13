@@ -3,10 +3,15 @@
 (function(){
 
   var module = angular.module('geonode_main_search', [], function($locationProvider) {
-      $locationProvider.html5Mode(true);
+      if (window.navigator.userAgent.indexOf("MSIE") == -1){
+          $locationProvider.html5Mode({
+            enabled: true,
+            requireBase: false
+          });
 
-      // make sure that angular doesn't intercept the page links
-      angular.element("a").prop("target", "_self");
+          // make sure that angular doesn't intercept the page links
+          angular.element("a").prop("target", "_self");
+      }
     });
 
     // Used to set the class of the filters based on the url parameters
@@ -21,9 +26,12 @@
         return data;
     }
 
-  // Load categories and keywords
+  // Load categories, keywords, and regions
   module.load_categories = function ($http, $rootScope, $location){
         var params = typeof FILTER_TYPE == 'undefined' ? {} : {'type': FILTER_TYPE};
+        if ($location.search().hasOwnProperty('title__icontains')){
+          params['title__icontains'] = $location.search()['title__icontains'];
+        }
         $http.get(CATEGORIES_ENDPOINT, {params: params}).success(function(data){
             if($location.search().hasOwnProperty('category__identifier__in')){
                 data.objects = module.set_initial_filters_from_query(data.objects,
@@ -41,6 +49,17 @@
                     $location.search()['keywords__slug__in'], 'slug');
             }
             $rootScope.keywords = data.objects;
+            if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
+                module.haystack_facets($http, $rootScope, $location);
+            }
+        });
+
+        $http.get(REGIONS_ENDPOINT, {params: params}).success(function(data){
+            if($location.search().hasOwnProperty('regions__name__in')){
+                data.objects = module.set_initial_filters_from_query(data.objects,
+                    $location.search()['regions__name__in'], 'name');
+            }
+            $rootScope.regions = data.objects;
             if (HAYSTACK_FACET_COUNTS && $rootScope.query_data) {
                 module.haystack_facets($http, $rootScope, $location);
             }
@@ -70,6 +89,18 @@
                   keyword.count = $rootScope.keyword_counts[keyword.slug]
               } else {
                   keyword.count = 0;
+              }
+          }
+      }	
+
+      if ("regions" in $rootScope) {
+          $rootScope.regions_counts = data.meta.facets.regions;
+          for (var id in $rootScope.regions) {
+              var region = $rootScope.regions[id];
+              if (region.name in $rootScope.region_counts) {
+                  region.count = $rootScope.region_counts[region.name]
+              } else {
+                  region.count = 0;
               }
           }
       }
@@ -131,8 +162,8 @@
             $scope.text_query = $location.search()['q'].replace(/\+/g," ");
           }
         } else {
-          if ($location.search().hasOwnProperty('title__contains')){
-            $scope.text_query = $location.search()['title__contains'].replace(/\+/g," ");
+          if ($location.search().hasOwnProperty('title__icontains')){
+            $scope.text_query = $location.search()['title__icontains'].replace(/\+/g," ");
           }
         }
 
@@ -285,11 +316,12 @@
     * Text search management
     */
     var text_autocomplete = $('#text_search_input').yourlabsAutocomplete({
-          url: AUTOCOMPLETE_URL,
+          url: AUTOCOMPLETE_URL_RESOURCEBASE,
           choiceSelector: 'span',
           hideAfter: 200,
           minimumCharacters: 1,
-          appendAutocomplete: $('#text_search_input')
+          appendAutocomplete: $('#text_search_input'),
+          placeholder: gettext('Enter your text here ...')
     });
     $('#text_search_input').bind('selectChoice', function(e, choice, text_autocomplete) {
           if(choice[0].children[0] == undefined) {
@@ -302,12 +334,48 @@
         if (HAYSTACK_SEARCH)
             $scope.query['q'] = $('#text_search_input').val();
         else
-            $scope.query['title__contains'] = $('#text_search_input').val();
+            $scope.query['title__icontains'] = $('#text_search_input').val();
         query_api($scope.query);
     });
 
+    /*
+    * Region search management
+    */
+    var region_autocomplete = $('#region_search_input').yourlabsAutocomplete({
+          url: AUTOCOMPLETE_URL_REGION,
+          choiceSelector: 'span',
+          hideAfter: 200,
+          minimumCharacters: 1,
+          appendAutocomplete: $('#region_search_input'),
+          placeholder: gettext('Enter your region here ...')
+    });
+    $('#region_search_input').bind('selectChoice', function(e, choice, region_autocomplete) {
+          if(choice[0].children[0] == undefined) {
+              $('#region_search_input').val(choice[0].innerHTML);
+              $('#region_search_btn').click();
+          }
+    });
 
+    $('#region_search_btn').click(function(){
+        if (HAYSTACK_SEARCH)
+            $scope.query['q'] = $('#region_search_input').val();
+        else
+            $scope.query['regions__name__in'] = $('#region_search_input').val();
+        query_api($scope.query);
+    });
 
+    $scope.feature_select = function($event){
+      var element = $($event.target);
+      var article = $(element.parents('article')[0]);
+      if (article.hasClass('resource_selected')){
+        element.html('Select');
+        article.removeClass('resource_selected');
+      }
+      else{
+        element.html('Deselect');
+        article.addClass('resource_selected');
+      } 
+    };
 
     /*
     * Date management
@@ -317,7 +385,7 @@
       'date__gte': '',
       'date__lte': ''
     };
-
+    var init_date = true;
     $scope.$watch('date_query', function(){
       if($scope.date_query.date__gte != '' && $scope.date_query.date__lte != ''){
         $scope.query['date__range'] = $scope.date_query.date__gte + ',' + $scope.date_query.date__lte;
@@ -336,7 +404,12 @@
         delete $scope.query['date__gte'];
         delete $scope.query['date__lte'];
       }
-      query_api($scope.query);
+      if (!init_date){
+        query_api($scope.query);
+      }else{
+        init_date = false;
+      }
+      
     }, true);
 
     /*

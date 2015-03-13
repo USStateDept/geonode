@@ -20,6 +20,8 @@
 
 # Django settings for the GeoNode project.
 import os
+from kombu import Queue
+from celery_app import app  # flake8: noqa
 
 #
 # General Django development settings
@@ -81,18 +83,61 @@ LANGUAGES = (
     ('zh-cn', '中文'),
     ('ja', '日本語'),
     ('fa', 'Persian'),
+    ('ar', 'Arabic'),
+    ('bn', 'Bengali'),
+    ('ne', 'Nepali'),
+    ('sq', 'Albanian'),
+    ('af', 'Afrikaans'),
+    ('sw', 'Swahili'),
     ('pt', 'Portuguese'),
     ('ru', 'Russian'),
     ('vi', 'Vietnamese'),
-    # ('fil', 'Filipino'),
-
+    ('ko', '한국어'),
+    ('am', 'Amharic'),
+    ('km', 'Khmer'),
+    ('pl', 'Polish'),
+    ('sv', 'Swedish'),
+    ('th', 'Thai'),
+    ('uk', 'Ukranian'),
+    ('si', 'Sinhala'),
+    ('ta', 'Tamil'),
+    ('tl', 'Tagalog'),
 )
+
+EXTRA_LANG_INFO = {
+    'am': {
+        'bidi': False,
+        'code': 'am',
+        'name': 'Amharic',
+        'name_local': 'Amharic',
+        },
+    'tl': {
+        'bidi': False,
+        'code': 'tl',
+        'name': 'Tagalog',
+        'name_local': 'tagalog',
+        },
+    'ta': {
+        'bidi': False,
+        'code': 'ta',
+        'name': 'Tamil',
+        'name_local': u'tamil',
+        },
+    'si': {
+        'bidi': False,
+        'code': 'si',
+        'name': 'Sinhala',
+        'name_local': 'sinhala',
+        },
+}
 
 AUTH_USER_MODEL = 'people.Profile'
 
 # If you set this to False, Django will make some optimizations so as not
 # to load the internationalization machinery.
 USE_I18N = True
+
+MODELTRANSLATION_LANGUAGES = ['en', ]
 
 MODELTRANSLATION_DEFAULT_LANGUAGE = 'en'
 
@@ -213,6 +258,7 @@ GEONODE_APPS = (
     # it's signals may rely on other apps' signals.
     'geonode.geoserver',
     'geonode.upload',
+    'geonode.tasks'
 )
 
 INSTALLED_APPS = (
@@ -238,7 +284,6 @@ INSTALLED_APPS = (
     # Utility
     'pagination',
     'taggit',
-    'taggit_templatetags',
     'friendlytagloader',
     'geoexplorer',
     'leaflet',
@@ -247,6 +292,7 @@ INSTALLED_APPS = (
     'autocomplete_light',
     'mptt',
     'modeltranslation',
+    'djcelery',
 
     # Theme
     "pinax_theme_bootstrap_account",
@@ -258,7 +304,7 @@ INSTALLED_APPS = (
     'avatar',
     'dialogos',
     'agon_ratings',
-    'notification',
+    #'notification',
     'announcements',
     'actstream',
     'user_messages',
@@ -344,6 +390,12 @@ MIDDLEWARE_CLASSES = (
     'pagination.middleware.PaginationMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # This middleware allows to print private layers for the users that have 
+    # the permissions to view them.
+    # It sets temporary the involved layers as public before restoring the permissions.
+    # Beware that for few seconds the involved layers are public there could be risks.
+    # 'geonode.middleware.PrintProxyMiddleware',
 )
 
 
@@ -356,6 +408,10 @@ AUTHENTICATION_BACKENDS = (
 
 ANONYMOUS_USER_ID = -1
 GUARDIAN_GET_INIT_ANONYMOUS_USER = 'geonode.people.models.get_anonymous_user_instance'
+
+# Whether the uplaoded resources should be public and downloadable by default or not
+DEFAULT_ANONYMOUS_VIEW_PERMISSION = True
+DEFAULT_ANONYMOUS_DOWNLOAD_PERMISSION = True
 
 #
 # Settings for default search size
@@ -397,6 +453,9 @@ ACTSTREAM_SETTINGS = {
 
 # Settings for Social Apps
 REGISTRATION_OPEN = False
+ACCOUNT_EMAIL_CONFIRMATION_EMAIL = False
+ACCOUNT_EMAIL_CONFIRMATION_REQUIRED = False
+ACCOUNT_APPROVAL_REQUIRED = False
 
 # Email for users to contact admins.
 THEME_ACCOUNT_CONTACT_EMAIL = 'admin@example.com'
@@ -452,10 +511,11 @@ OGC_SERVER = {
         'MAPFISH_PRINT_ENABLED': True,
         'PRINT_NG_ENABLED': True,
         'GEONODE_SECURITY_ENABLED': True,
-        'GEOGIT_ENABLED': False,
+        'GEOGIG_ENABLED': False,
         'WMST_ENABLED': False,
         'BACKEND_WRITE_ENABLED': True,
-        'WPS_ENABLED': True,
+        'WPS_ENABLED': False,
+        'LOG_FILE': '%s/geoserver/data/logs/geoserver.log' % os.path.abspath(os.path.join(PROJECT_ROOT, os.pardir)),
         # Set to name of database in DATABASES dictionary to enable
         'DATASTORE': '',  # 'datastore',
         'TIMEOUT': 10  # number of seconds to allow for HTTP requests
@@ -467,7 +527,7 @@ UPLOADER = {
     'BACKEND': 'geonode.rest',
     'OPTIONS': {
         'TIME_ENABLED': False,
-        'GEOGIT_ENABLED': False,
+        'GEOGIG_ENABLED': False,
     }
 }
 
@@ -584,6 +644,33 @@ MAP_BASELAYERS = [{
 
 SOCIAL_BUTTONS = True
 
+SOCIAL_ORIGINS = [{
+    "label":"Email",
+    "url":"mailto:?subject={name}&body={url}",
+    "css_class":"email"
+}, {
+    "label":"Facebook",
+    "url":"http://www.facebook.com/sharer.php?u={url}",
+    "css_class":"fb"
+}, {
+    "label":"Twitter",
+    "url":"https://twitter.com/share?url={url}",
+    "css_class":"tw"
+}, {
+    "label":"Google +",
+    "url":"https://plus.google.com/share?url={url}",
+    "css_class":"gp"
+}]
+
+#CKAN Query String Parameters names pulled from
+#https://github.com/ckan/ckan/blob/2052628c4a450078d58fb26bd6dc239f3cc68c3e/ckan/logic/action/create.py#L43
+CKAN_ORIGINS = [{
+    "label":"Humanitarian Data Exchange (HDX)",
+    "url":"https://data.hdx.rwlabs.org/dataset/new?title={name}&dataset_date={date}&notes={abstract}&caveats={caveats}",
+    "css_class":"hdx"
+}]
+#SOCIAL_ORIGINS.extend(CKAN_ORIGINS)
+
 # Enable Licenses User Interface
 # Regardless of selection, license field stil exists as a field in the Resourcebase model.
 # Detail Display: above, below, never
@@ -636,7 +723,7 @@ HAYSTACK_FACET_COUNTS = False
 
 # Available download formats
 DOWNLOAD_FORMATS_METADATA = [
-    'Atom', 'DIF', 'Dublin Core', 'ebRIM', 'FGDC', 'TC211',
+    'Atom', 'DIF', 'Dublin Core', 'ebRIM', 'FGDC', 'ISO',
 ]
 DOWNLOAD_FORMATS_VECTOR = [
     'JPEG', 'PDF', 'PNG', 'Zipped Shapefile', 'GML 2.0', 'GML 3.1.1', 'CSV',
@@ -661,6 +748,9 @@ TASTYPIE_DEFAULT_FORMATS = ['json']
 
 # gravatar settings
 AUTO_GENERATE_AVATAR_SIZES = (20, 32, 80, 100, 140, 200)
+
+# notification settings
+NOTIFICATION_LANGUAGE_MODULE = "account.Account"
 
 # Number of results per page listed in the GeoNode search pages
 CLIENT_RESULTS_LIMIT = 100
@@ -700,6 +790,9 @@ LEAFLET_CONFIG = {
     }
 }
 
+# option to enable/disable resource unpublishing for administrators
+RESOURCE_PUBLISHING = False
+
 CACHES = {
     # DUMMY CACHE FOR DEVELOPMENT
     'default': {
@@ -717,11 +810,62 @@ CACHES = {
     #     }
 }
 
+LAYER_PREVIEW_LIBRARY = 'geoext'
+
+SERVICE_UPDATE_INTERVAL = 0
+
+# Queue non-blocking notifications.
+NOTIFICATION_QUEUE_ALL = False
+
+BROKER_URL = "django://"
+CELERY_ALWAYS_EAGER = True
+CELERY_EAGER_PROPAGATES_EXCEPTIONS = True
+CELERY_IGNORE_RESULT = True
+CELERY_SEND_EVENTS = False
+CELERY_RESULT_BACKEND = None
+CELERY_TASK_RESULT_EXPIRES = 1
+CELERY_DISABLE_RATE_LIMITS = True
+CELERY_DEFAULT_QUEUE = "default"
+CELERY_DEFAULT_EXCHANGE = "default"
+CELERY_DEFAULT_EXCHANGE_TYPE = "direct"
+CELERY_DEFAULT_ROUTING_KEY = "default"
+CELERY_CREATE_MISSING_QUEUES = True
+CELERY_IMPORTS = (
+    'geonode.tasks.deletion',
+    'geonode.tasks.update',
+    'geonode.tasks.email'
+)
+
+
+CELERY_QUEUES = [
+    Queue('default', routing_key='default'),
+    Queue('cleanup', routing_key='cleanup'),
+    Queue('update', routing_key='update'),
+    Queue('email', routing_key='email'),
+]
+
+import djcelery
+djcelery.setup_loader()
+
 # Load more settings from a file called local_settings.py if it exists
 try:
     from local_settings import *  # noqa
 except ImportError:
     pass
+
+
+#for windows users check if they didn't set GEOS and GDAL in local_settings.py
+#maybe they set it as a windows environment
+if os.name == 'nt':
+    if not "GEOS_LIBRARY_PATH" in locals() or not "GDAL_LIBRARY_PATH" in locals():
+        if os.environ.get("GEOS_LIBRARY_PATH", None) \
+            and os.environ.get("GDAL_LIBRARY_PATH", None):
+            GEOS_LIBRARY_PATH = os.environ.get('GEOS_LIBRARY_PATH') 
+            GDAL_LIBRARY_PATH = os.environ.get('GDAL_LIBRARY_PATH')
+        else:
+            #maybe it will be found regardless if not it will throw 500 error
+            from django.contrib.gis.geos import GEOSGeometry
+
 
 # define the urls after the settings are overridden
 if 'geonode.geoserver' in INSTALLED_APPS:

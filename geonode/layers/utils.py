@@ -32,23 +32,18 @@ from osgeo import gdal
 
 # Django functionality
 from django.contrib.auth import get_user_model
-from django.utils.translation import ugettext_lazy as _
 from django.template.defaultfilters import slugify
 from django.core.files import File
-from django.core.files.base import ContentFile
 from django.conf import settings
 
 # Geonode functionality
 from geonode import GeoNodeException
 from geonode.people.utils import get_valid_user
 from geonode.layers.models import Layer, UploadSession
-from geonode.base.models import (Link, ResourceBase, Thumbnail,
-                                 SpatialRepresentationType, TopicCategory)
+from geonode.base.models import Link, SpatialRepresentationType, TopicCategory
 from geonode.layers.models import shp_exts, csv_exts, vec_exts, cov_exts
-from geonode.utils import http_client
 from geonode.layers.metadata import set_metadata
-
-from urlparse import urljoin
+from geonode.utils import http_client
 
 from zipfile import ZipFile
 
@@ -306,11 +301,6 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     # Get all the files uploaded with the layer
     files = get_files(filename)
 
-    # Add them to the upload session (new file fields are created).
-    for type_name, fn in files.items():
-        with open(fn, 'rb') as f:
-            upload_session.layerfile_set.create(name=type_name, file=File(f))
-
     # Set a default title that looks nice ...
     if title is None:
         basename = os.path.splitext(os.path.basename(filename))[0]
@@ -323,8 +313,25 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     # Generate a name that is not taken if overwrite is False.
     valid_name = get_valid_layer_name(name, overwrite)
 
+    # Add them to the upload session (new file fields are created).
+    assigned_name = None
+    for type_name, fn in files.items():
+        with open(fn, 'rb') as f:
+            upload_session.layerfile_set.create(name=type_name,
+                                                file=File(f, name='%s.%s' % (assigned_name or valid_name, type_name)))
+            # save the system assigned name for the remaining files
+            if not assigned_name:
+                the_file = upload_session.layerfile_set.all()[0].file.name
+                assigned_name = os.path.splitext(os.path.basename(the_file))[0]
+
     # Get a bounding box
     bbox_x0, bbox_x1, bbox_y0, bbox_y1 = get_bbox(filename)
+
+    # by default, if RESOURCE_PUBLISHING=True then layer.is_published
+    # must be set to False
+    is_published = True
+    if settings.RESOURCE_PUBLISHING:
+        is_published = False
 
     defaults = {
         'upload_session': upload_session,
@@ -336,6 +343,7 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
         'bbox_x1': bbox_x1,
         'bbox_y0': bbox_y0,
         'bbox_y1': bbox_y1,
+        'is_published': is_published,
     }
 
     # set metadata
@@ -350,8 +358,10 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
                 value = SpatialRepresentationType(identifier=value)
             elif key == 'topic_category':
                 value, created = TopicCategory.objects.get_or_create(
-                    identifier=value.lower(), gn_description=value)
+                    identifier=value.lower(),
+                    defaults={'description': '', 'gn_description': value})
                 key = 'category'
+                defaults[key] = value
             else:
                 defaults[key] = value
 
@@ -376,6 +386,9 @@ def file_upload(filename, name=None, user=None, title=None, abstract=None,
     if not created and overwrite:
         layer.upload_session.layerfile_set.all().delete()
         layer.upload_session = upload_session
+        # Pass the parameter overwrite to tell whether the
+        # geoserver_post_save_signal should upload the new file or not
+        layer.overwrite = overwrite
         layer.save()
 
     # Assign the keywords (needs to be done after saving)
@@ -494,23 +507,29 @@ def upload(incoming, user=None, overwrite=False,
     return output
 
 
-def create_thumbnail(instance, thumbnail_remote_url, thumbail_create_url=None):
+def create_thumbnail(instance, thumbnail_remote_url, thumbnail_create_url=None, check_bbox=True, ogc_client=None):
+    if not ogc_client:
+        ogc_client = http_client
     BBOX_DIFFERENCE_THRESHOLD = 1e-5
 
-    if not thumbail_create_url:
-        thumbail_create_url = thumbnail_remote_url
+    if not thumbnail_create_url:
+        thumbnail_create_url = thumbnail_remote_url
 
-    # Check if the bbox is invalid
-    valid_x = (
-        float(
-            instance.bbox_x0) -
-        float(
-            instance.bbox_x1)) ** 2 > BBOX_DIFFERENCE_THRESHOLD
-    valid_y = (
-        float(
-            instance.bbox_y1) -
-        float(
-            instance.bbox_y0)) ** 2 > BBOX_DIFFERENCE_THRESHOLD
+    if check_bbox:
+        # Check if the bbox is invalid
+        valid_x = (
+            float(
+                instance.bbox_x0) -
+            float(
+                instance.bbox_x1)) ** 2 > BBOX_DIFFERENCE_THRESHOLD
+        valid_y = (
+            float(
+                instance.bbox_y1) -
+            float(
+                instance.bbox_y0)) ** 2 > BBOX_DIFFERENCE_THRESHOLD
+    else:
+        valid_x = True
+        valid_y = True
 
     image = None
 
@@ -518,15 +537,15 @@ def create_thumbnail(instance, thumbnail_remote_url, thumbail_create_url=None):
         Link.objects.get_or_create(resource=instance.get_self_resource(),
                                    url=thumbnail_remote_url,
                                    defaults=dict(
-            extension='png',
-            name=_("Remote Thumbnail"),
-            mime='image/png',
-            link_type='image',
-        )
-        )
-
+                                       extension='png',
+                                       name="Remote Thumbnail",
+                                       mime='image/png',
+                                       link_type='image',
+                                       )
+                                   )
+        Layer.objects.filter(id=instance.id).update(thumbnail_url=thumbnail_remote_url)
         # Download thumbnail and save it locally.
-        resp, image = http_client.request(thumbail_create_url)
+        resp, image = ogc_client.request(thumbnail_create_url)
         if 'ServiceException' in image or resp.status < 200 or resp.status > 299:
             msg = 'Unable to obtain thumbnail: %s' % image
             logger.debug(msg)
@@ -534,32 +553,5 @@ def create_thumbnail(instance, thumbnail_remote_url, thumbail_create_url=None):
             image = None
 
     if image is not None:
-        # first delete thumbnail file on disk to prevent duplicates:
-        if instance.has_thumbnail():
-            instance.thumbnail_set.get().thumb_file.delete()
-        # update database and save new thumbnail file on disk:
-        instance.thumbnail_set.all().delete()
-        thumbnail = Thumbnail(thumb_spec=thumbnail_remote_url)
-        instance.thumbnail_set.add(thumbnail)
-        thumbnail.thumb_file.save(
-            'layer-%s-thumb.png' %
-            instance.id,
-            ContentFile(image))
-        thumbnail.save()
-
-        thumbnail_url = urljoin(
-            settings.SITEURL,
-            instance.thumbnail_set.get().thumb_file.url)
-
-        Link.objects.get_or_create(resource=instance.resourcebase_ptr,
-                                   url=thumbnail_url,
-                                   defaults=dict(
-                                       name=_('Thumbnail'),
-                                       extension='png',
-                                       mime='image/png',
-                                       link_type='image',
-                                   )
-                                   )
-    ResourceBase.objects.filter(id=instance.id).update(
-        thumbnail_url=instance.get_thumbnail_url()
-    )
+        filename = 'layer-%s-thumb.png' % instance.uuid
+        instance.save_thumbnail(filename, image=image)

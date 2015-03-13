@@ -7,7 +7,6 @@ from django.core.exceptions import ImproperlyConfigured
 from django.conf import settings
 from django.test import TestCase
 from django.core.urlresolvers import reverse
-from django.test.client import Client
 from django.test.utils import override_settings
 
 from guardian.shortcuts import assign_perm, get_anonymous_user
@@ -35,12 +34,11 @@ class LayerTests(TestCase):
         layer = Layer.objects.all()[0]
 
         bob = get_user_model().objects.get(username='bobby')
-        assign_perm('change_resourcebase', bob, layer.get_self_resource())
+        assign_perm('change_layer_style', bob, layer)
 
-        c = Client()
-        logged_in = c.login(username='bobby', password='bob')
+        logged_in = self.client.login(username='bobby', password='bob')
         self.assertEquals(logged_in, True)
-        response = c.get(reverse('layer_style_manage', args=(layer.typename,)))
+        response = self.client.get(reverse('layer_style_manage', args=(layer.typename,)))
         self.assertEqual(response.status_code, 200)
 
     def test_feature_edit_check(self):
@@ -51,10 +49,8 @@ class LayerTests(TestCase):
         valid_layer_typename = Layer.objects.all()[0].typename
         invalid_layer_typename = "n0ch@nc3"
 
-        c = Client()
-
         # Test that an invalid layer.typename is handled for properly
-        response = c.post(
+        response = self.client.post(
             reverse(
                 'feature_edit_check',
                 args=(
@@ -63,7 +59,7 @@ class LayerTests(TestCase):
         self.assertEquals(response.status_code, 404)
 
         # First test un-authenticated
-        response = c.post(
+        response = self.client.post(
             reverse(
                 'feature_edit_check',
                 args=(
@@ -73,9 +69,9 @@ class LayerTests(TestCase):
         self.assertEquals(response_json['authorized'], False)
 
         # Next Test with a user that does NOT have the proper perms
-        logged_in = c.login(username='bobby', password='bob')
+        logged_in = self.client.login(username='bobby', password='bob')
         self.assertEquals(logged_in, True)
-        response = c.post(
+        response = self.client.post(
             reverse(
                 'feature_edit_check',
                 args=(
@@ -85,10 +81,10 @@ class LayerTests(TestCase):
         self.assertEquals(response_json['authorized'], False)
 
         # Login as a user with the proper permission and test the endpoint
-        logged_in = c.login(username='admin', password='admin')
+        logged_in = self.client.login(username='admin', password='admin')
         self.assertEquals(logged_in, True)
 
-        response = c.post(
+        response = self.client.post(
             reverse(
                 'feature_edit_check',
                 args=(
@@ -106,7 +102,7 @@ class LayerTests(TestCase):
         # Test that the method returns authorized=True if it's a datastore
         if settings.OGC_SERVER['default']['DATASTORE']:
             # The check was moved from the template into the view
-            response = c.post(
+            response = self.client.post(
                 reverse(
                     'feature_edit_check',
                     args=(
@@ -134,7 +130,7 @@ class LayerTests(TestCase):
 
         bob = get_user_model().objects.get(username='bobby')
         layer_ca = Layer.objects.get(typename='geonode:CA')
-        assign_perm('change_resourcebase', bob, layer_ca.get_self_resource())
+        assign_perm('change_layer_data', bob, layer_ca)
 
         # Test that requesting when supplying the geoserver credentials returns
         # the expected json
@@ -154,21 +150,21 @@ class LayerTests(TestCase):
                      u'geonode:fleem'],
             u'rw': [u'geonode:CA']
         }
-        c = Client()
-        response = c.get(reverse('layer_acls'), **valid_auth_headers)
+        response = self.client.get(reverse('layer_acls'), **valid_auth_headers)
         response_json = json.loads(response.content)
-        self.assertEquals(expected_result, response_json)
+        # 'ro' and 'rw' are unsorted collections
+        self.assertEquals(sorted(expected_result), sorted(response_json))
 
         # Test that requesting when supplying invalid credentials returns the
         # appropriate error code
-        response = c.get(reverse('layer_acls'), **invalid_auth_headers)
+        response = self.client.get(reverse('layer_acls'), **invalid_auth_headers)
         self.assertEquals(response.status_code, 401)
 
         # Test logging in using Djangos normal auth system
-        c.login(username='admin', password='admin')
+        self.client.login(username='admin', password='admin')
 
         # Basic check that the returned content is at least valid json
-        response = c.get(reverse('layer_acls'))
+        response = self.client.get(reverse('layer_acls'))
         response_json = json.loads(response.content)
 
         self.assertEquals('admin', response_json['fullname'])
@@ -193,8 +189,7 @@ class LayerTests(TestCase):
             base64.b64encode(invalid_uname_pw),
         }
 
-        c = Client()
-        response = c.get(reverse('layer_resolve_user'), **valid_auth_headers)
+        response = self.client.get(reverse('layer_resolve_user'), **valid_auth_headers)
         response_json = json.loads(response.content)
         self.assertEquals({'geoserver': False,
                            'superuser': True,
@@ -205,14 +200,14 @@ class LayerTests(TestCase):
 
         # Test that requesting when supplying invalid credentials returns the
         # appropriate error code
-        response = c.get(reverse('layer_acls'), **invalid_auth_headers)
+        response = self.client.get(reverse('layer_acls'), **invalid_auth_headers)
         self.assertEquals(response.status_code, 401)
 
         # Test logging in using Djangos normal auth system
-        c.login(username='admin', password='admin')
+        self.client.login(username='admin', password='admin')
 
         # Basic check that the returned content is at least valid json
-        response = c.get(reverse('layer_resolve_user'))
+        response = self.client.get(reverse('layer_resolve_user'))
         response_json = json.loads(response.content)
 
         self.assertEquals('admin', response_json['user'])
@@ -232,12 +227,12 @@ class UtilsTests(TestCase):
                 'MAPFISH_PRINT_ENABLED': True,
                 'PRINT_NG_ENABLED': True,
                 'GEONODE_SECURITY_ENABLED': True,
-                'GEOGIT_ENABLED': False,
+                'GEOGIG_ENABLED': False,
                 'WMST_ENABLED': False,
                 'BACKEND_WRITE_ENABLED': True,
                 'WPS_ENABLED': False,
                 'DATASTORE': str(),
-                'GEOGIT_DATASTORE_DIR': str(),
+                'GEOGIG_DATASTORE_DIR': str(),
             }
         }
 
@@ -245,7 +240,7 @@ class UtilsTests(TestCase):
             'BACKEND': 'geonode.rest',
             'OPTIONS': {
                 'TIME_ENABLED': False,
-                'GEOGIT_ENABLED': False}}
+                'GEOGIG_ENABLED': False}}
 
         self.DATABASE_DEFAULT_SETTINGS = {
             'default': {
@@ -277,7 +272,7 @@ class UtilsTests(TestCase):
             self.assertTrue(ogc_settings.MAPFISH_PRINT_ENABLED)
             self.assertTrue(ogc_settings.PRINT_NG_ENABLED)
             self.assertTrue(ogc_settings.GEONODE_SECURITY_ENABLED)
-            self.assertFalse(ogc_settings.GEOGIT_ENABLED)
+            self.assertFalse(ogc_settings.GEOGIG_ENABLED)
             self.assertFalse(ogc_settings.WMST_ENABLED)
             self.assertTrue(ogc_settings.BACKEND_WRITE_ENABLED)
             self.assertFalse(ogc_settings.WPS_ENABLED)
@@ -395,8 +390,7 @@ class SecurityTest(TestCase):
                 response,
                 msg="Middleware activated for white listed path: {0}".format(path))
 
-        c = Client()
-        c.login(username='admin', password='admin')
+        self.client.login(username='admin', password='admin')
         self.assertTrue(self.admin.is_authenticated())
         request.user = self.admin
 

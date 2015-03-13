@@ -47,16 +47,6 @@ define(function (require, exports) {
         return name.replace(/\[|\]|\(|\)/g, '_');
     };
 
-    /** Function to get progress template 
-     *
-     *  @params {options}
-     *  @returns 
-     */
-    LayerInfo.prototype.progressTemplate  = function (options) {
-        var template =  _.template($('#progressTemplate').html());
-        return template(options);
-    };
-
     /** Function to return the success template  
      *
      *  @params {options}
@@ -144,7 +134,7 @@ define(function (require, exports) {
      *  @returns {FromData}
      */
     LayerInfo.prototype.prepareFormData = function (form_data) {
-        var i, ext, file, perm, geogit, geogit_store, time;
+        var i, ext, file, perm, geogig, geogig_store, time;
 
         if (!form_data) {
             form_data = new FormData();
@@ -157,15 +147,15 @@ define(function (require, exports) {
             perm = permissionsString('#permission_form','layers');
         }
 
-        if (geogit_enabled) {
-            geogit = $('#' + this.main.name.slice(0, -4) + '\\:geogit_toggle').is(':checked');
-            if (geogit) {
-                geogit_store = $('#' + this.main.name.slice(0, -4) + '\\:geogit_store').val();
-                form_data.append('geogit_store', geogit_store);
+        if (geogig_enabled) {
+            geogig = $('#' + this.main.name.slice(0, -4) + '\\:geogig_toggle').is(':checked');
+            if (geogig) {
+                geogig_store = $('#' + this.main.name.slice(0, -4) + '\\:geogig_store').val();
+                form_data.append('geogig_store', geogig_store);
             } else {
-                form_data.append('geogit_store', "");
+                form_data.append('geogig_store', "");
             }
-            form_data.append('geogit', geogit);
+            form_data.append('geogig', geogig);
         }
         if (time_enabled) {
             time = $('#' + this.main.name.slice(0, -4) + '-time').is(':checked');
@@ -187,31 +177,23 @@ define(function (require, exports) {
         return form_data;
     };
 
-    /** Log the status to the status div 
+    /** Log the status to the status div
      *
      *  @params {options}
      *  @returns {string}
      */
     LayerInfo.prototype.logStatus = function (options) {
-        var status = this.element.find('#status'),
-            empty = options.empty;
-
-        if (empty) {
-            status.empty();
-        }
-        status.append(this.progressTemplate({
-            message: options.msg,
-            alertLevel: options.level
-        }));
+        options.element = this.element.find('#status');
+        common.logStatus(options);
     };
 
-    /** Function to mark errors in the the status 
+    /** Function to mark errors in the the status
      *
      *  @params {error}
      *  @returns {string}
      */
     LayerInfo.prototype.markError = function (error, status) {
-        this.logStatus({msg: error, level: 'alert-error', empty:true});
+        common.logError(error, this.element.find('#status'));
     };
 
     /** Function to mark the start of the upload
@@ -224,7 +206,7 @@ define(function (require, exports) {
      */
     LayerInfo.prototype.markStart = function () {
         this.logStatus({
-            msg: 'Your upload has started<div class="progress" id="prog"><div class="bar bar-success" style="width:0%"></div>',
+            msg: 'Your upload has started<div class="progress" id="prog"><div class="progress-bar progress-bar-success" style="width:0%"></div>',
             level: 'alert-success',
             empty: 'true'
         });
@@ -246,11 +228,18 @@ define(function (require, exports) {
 
     LayerInfo.prototype.displayUploadedLayerLinks = function(resp) {
         var self = this;
-        var a = '<a href="' + resp.url + '" class="btn">Layer Info</a>';
-        var b = '<a href="' + resp.url + '/metadata" class="btn">Edit Metadata</a>';
-        var c = '<a href="' + resp.url + '/style/manage" class="btn">Manage Styles</a>';
+        var a = '<a href="' + resp.url + '" class="btn btn-success">' + gettext('Layer Info') + '</a>';
+        var b = '<a href="' + resp.url + '/metadata" class="btn btn-warning">' + gettext('Edit Metadata') + '</a>';
+        var c = '<a href="' + resp.url.replace(/^\/layers/, '/gs') + '/style/manage" class="btn btn-warning">' + gettext('Manage Styles') + '</a>';
+        var msg_col = "";
+        if (resp.info){
+            var msg_template = gettext('The column %1 was renamed to %2 <br/>');
+            for (var key in resp.info){
+               msg_col += format(msg_template,[key,resp.info[key]]);
+            }
+        }
         self.logStatus({
-            msg: '<p> Your layer was successfully uploaded<br/><br/>' + a + '&nbsp;&nbsp;&nbsp;' + b + '&nbsp;&nbsp;&nbsp;' + c + '</p>',
+            msg: '<p>' + gettext('Your layer was successfully uploaded') + '<br/>' + msg_col + '<br/>' + a + '&nbsp;&nbsp;&nbsp;' + b + '&nbsp;&nbsp;&nbsp;' + c + '</p>',
             level: 'alert-success',
             empty: 'true'
         });
@@ -279,7 +268,7 @@ define(function (require, exports) {
                 async: true,
                 beforeSend: function() {
                     self.logStatus({
-                        msg: '<p>Performing Final GeoServer Config Step <img class="pull-right" src="/static/geonode/img/loading.gif"></p>',
+                        msg: '<p>' + gettext('Performing Final GeoServer Config Step') + '<img class="pull-right" src="/static/geonode/img/loading.gif"></p>',
                         level: 'alert-success',
                         empty: 'true'
                     });
@@ -294,21 +283,25 @@ define(function (require, exports) {
                     self.polling = false;
                     if (resp.status === "other") {
                         self.logStatus({
-                            msg:'<p>You need to specify more information in order to complete your upload</p>',
+                            msg:'<p>' + gettext('You need to specify more information in order to complete your upload') + '</p>',
                             level: 'alert-success',
                             empty: 'true'
                         });
+                    } else if (resp.status === "pending") {
+                        setTimeout(function() {
+                            self.doFinal(resp);
+                        }, 5000);
                     } else {
                         self.displayUploadedLayerLinks(resp);
                     }
-                },
+                }
             });
         } else if (resp.status === "incomplete") {
             var id = resp.url.split('=')[1]
             var element = 'next_step_' + id
             var a = '<a id="' + element + '" class="btn">Continue</a>';
             self.logStatus({
-                msg:'<p>You need to specify more information in order to complete your upload.</p><p>You can continue configuring your layer.</p><p>' + a + '</p>',
+                msg:'<p>' + gettext('You need to specify more information in order to complete your upload.') + '</p><p>' + gettext('You can continue configuring your layer.') + '</p><p>' + a + '</p>',
                 level: 'alert-success',
                 empty: 'true'
             });
@@ -316,7 +309,7 @@ define(function (require, exports) {
             return;
         } else if (resp.status === "other") {
             self.logStatus({
-                msg:'<p>You need to specify more information in order to complete your upload</p>',
+                msg:'<p>' + gettext('You need to specify more information in order to complete your upload') + '</p>',
                 level: 'alert-success',
                 empty: 'true'
             });
@@ -326,7 +319,7 @@ define(function (require, exports) {
         } else {
             self.polling = false;
             self.logStatus({
-                msg:'<p>Unexpected Error</p>',
+                msg:'<p>' + gettext('Unexpected Error') + '</p>',
                 level: 'alert-error',
                 empty: 'true'
             });
@@ -342,7 +335,7 @@ define(function (require, exports) {
     LayerInfo.prototype.doStep = function (resp) {
         var self = this;
         self.logStatus({
-            msg: '<p>Performing GeoServer Config Step</p>',
+            msg: '<p>' + gettext('Performing GeoServer Config Step') + '</p>',
             level: 'alert-success',
             empty: 'true'
         });
@@ -397,7 +390,7 @@ define(function (require, exports) {
                     req.upload.addEventListener('progress', function(evt) {
                         if(evt.lengthComputable) {
                             var pct = (evt.loaded / evt.total) * 100;
-                            $('#prog > .bar').css('width', pct.toPrecision(3) + '%');
+                            $('#prog > .progress-bar').css('width', pct.toPrecision(3) + '%');
                         }
                     }, false);
                 }
@@ -411,40 +404,29 @@ define(function (require, exports) {
             error: function (jqXHR) {
                 self.polling = false;
                 if (jqXHR === null) {
-                    self.markError("Unexpected Error");
+                    self.markError(gettext('Unexpected Error'));
                 } else {
-                    var parsed_errors = $.parseJSON(jqXHR.responseText)
-                    var error_message = 'No error message supplied';
-
-                    // Support the two different syntax used in GeoNode.
-                    // TODO(Ariel): Agree on one of those server side and
-                    // simplify this code. It can be either 'errormsgs' or 'error'.
-                    if(parsed_errors.hasOwnProperty("errormsgs")){
-                        error_message = parsed_errors.errormsgs;
-                    }else{
-                        error_message = parsed_errors.errors;
-                    } 
-                    self.markError(error_message);
+                    self.markError(jqXHR);
                 }
             },
             success: function (resp, status) {
                 self.logStatus({
-                    msg: '<p> Layer files uploaded, configuring in GeoServer</p>',
+                    msg: '<p>' + gettext('Layer files uploaded, configuring in GeoServer') + '</p>',
                     level: 'alert-success',
-                    empty: 'true',
+                    empty: 'true'
                 });
                 self.doStep(resp);
             }
         });
     };
 
-    LayerInfo.prototype.setupGeogitDropdown = function(selector){
+    LayerInfo.prototype.setupGeogigDropdown = function(selector){
         function format(item){return item.name;};
         $(selector).select2({
-           data: {results:geogit_stores, text:'name'},
+           data: {results:geogig_stores, text:'name'},
            formatSelection: format,
            formatResult: format,
-           placeholder: 'Select or create a Geogit repository.',
+           placeholder: gettext('Select or create a Geogig repository.'),
 
             id: function(object) {
              return object.name;
@@ -474,7 +456,7 @@ define(function (require, exports) {
                 selector: LayerInfo.safeSelector(this.name),
                 type: this.type.name,
                 format: this.type.format,
-                geogit: geogit_enabled,
+                geogig: geogig_enabled,
                 time: time_enabled
             });
         file_queue.append(li);
@@ -483,11 +465,11 @@ define(function (require, exports) {
         this.displayErrors();
         this.element = $(this.selector);
 
-        $('#' + this.name + '\\:geogit_toggle').on('change', this.doGeoGitToggle);
+        $('#' + this.name + '\\:geogig_toggle').on('change', this.doGeoGigToggle);
 
-        // Add values to the geogit store dropdown and hide.
-        this.setupGeogitDropdown($('#' + this.main.name.slice(0, -4) + '\\:geogit_store'));
-        $("#s2id_" + this.name + "\\:geogit_store").hide()
+        // Add values to the geogig store dropdown and hide.
+        this.setupGeogigDropdown($('#' + this.main.name.slice(0, -4) + '\\:geogig_store'));
+        $("#s2id_" + this.name + "\\:geogig_store").hide()
 
         return li;
     };
@@ -539,7 +521,7 @@ define(function (require, exports) {
         $.each(this.files, function (idx, file) {
             var li = $('<li/>').appendTo(ul),
                 p = $('<p/>', {text: file.name}).appendTo(li),
-                a  = $('<a/>', {text: ' Remove'});
+                a  = $('<a/>', {text: ' ' + gettext('Remove')});
 
             a.data('layer', self.name);
             a.data('file',  file.name);
@@ -584,19 +566,25 @@ define(function (require, exports) {
         this.displayErrors();
     };
 
-    LayerInfo.prototype.doGeoGitToggle = function (event) {
+    LayerInfo.prototype.doGeoGigToggle = function (event) {
         var target = event.target || event.srcElement;
         var id = target.id;
         var base_name = id.split(':')[0];
-        var geogit = $('#' + id.replace(':', '\\:')).is(':checked');
-        if (geogit) {
-            $('#' + base_name + '\\:geogit_store').show();
-            $("#s2id_" + base_name + "\\:geogit_store").show()
+        var geogig = $('#' + id.replace(':', '\\:')).is(':checked');
+        if (geogig) {
+            $('#' + base_name + '\\:geogig_store').show();
+            $("#s2id_" + base_name + "\\:geogig_store").show()
         } else {
-            $("#s2id_" + base_name + "\\:geogit_store").hide()
-            $('#' + base_name + '\\:geogit_store').hide();
+            $("#s2id_" + base_name + "\\:geogig_store").hide()
+            $('#' + base_name + '\\:geogig_store').hide();
         }
     };
 
     return LayerInfo;
 });
+
+function format(str, arr) {
+  return str.replace(/%(\d+)/g, function(_,m) {
+    return arr[--m];
+  });
+}

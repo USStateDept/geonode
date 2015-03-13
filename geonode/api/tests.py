@@ -122,6 +122,8 @@ class SearchApiTests(ResourceTestCase):
     def test_category_filters(self):
         """Test category filtering"""
 
+        # check we get the correct layers number returnered filtering on one
+        # and then two different categories
         filter_url = self.list_url + '?category__identifier=location'
 
         resp = self.api_client.get(filter_url)
@@ -138,6 +140,8 @@ class SearchApiTests(ResourceTestCase):
     def test_tag_filters(self):
         """Test keywords filtering"""
 
+        # check we get the correct layers number returnered filtering on one
+        # and then two different keywords
         filter_url = self.list_url + '?keywords__slug=layertagunique'
 
         resp = self.api_client.get(filter_url)
@@ -154,6 +158,8 @@ class SearchApiTests(ResourceTestCase):
     def test_owner_filters(self):
         """Test owner filtering"""
 
+        # check we get the correct layers number returnered filtering on one
+        # and then two different owners
         filter_url = self.list_url + '?owner__username=user1'
 
         resp = self.api_client.get(filter_url)
@@ -170,6 +176,8 @@ class SearchApiTests(ResourceTestCase):
     def test_title_filter(self):
         """Test title filtering"""
 
+        # check we get the correct layers number returnered filtering on the
+        # title
         filter_url = self.list_url + '?title=layer2'
 
         resp = self.api_client.get(filter_url)
@@ -179,6 +187,8 @@ class SearchApiTests(ResourceTestCase):
     def test_date_filter(self):
         """Test date filtering"""
 
+        # check we get the correct layers number returnered filtering on the
+        # title
         filter_url = self.list_url + '?date__exact=1985-01-01'
 
         resp = self.api_client.get(filter_url)

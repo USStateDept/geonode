@@ -20,15 +20,20 @@
 import os
 import json
 import datetime
+import urllib2
+import base64
+import time
+import logging
+import gisdata
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.management import call_command
-from django.test import Client
 from django.test import LiveServerTestCase as TestCase
 from django.core.urlresolvers import reverse
 from django.contrib.staticfiles.templatetags import staticfiles
 from django.contrib.auth import get_user_model
+from guardian.shortcuts import assign_perm
 
 from geoserver.catalog import FailedRequestError, UploadError
 
@@ -40,17 +45,18 @@ from geonode.layers.utils import (
     upload,
     file_upload,
 )
-from .utils import check_layer, get_web_page
+from geonode.tests.utils import check_layer, get_web_page
 
-from geonode.geoserver.helpers import cascading_delete
+from geonode.geoserver.helpers import cascading_delete, set_attributes
+# FIXME(Ariel): Uncomment these when #1767 is fixed
+# from geonode.geoserver.helpers import get_time_info
+# from geonode.geoserver.helpers import get_wms
+# from geonode.geoserver.helpers import set_time_info
 from geonode.geoserver.signals import gs_catalog
-
-import gisdata
 
 
 LOGIN_URL = "/accounts/login/"
 
-import logging
 logging.getLogger("south").setLevel(logging.INFO)
 
 
@@ -95,8 +101,7 @@ class NormalUserTest(TestCase):
         his own layer despite not being a site administrator.
         """
 
-        client = Client()
-        client.login(username='norman', password='norman')
+        self.client.login(username='norman', password='norman')
 
         # TODO: Would be nice to ensure the name is available before
         # running the test...
@@ -111,7 +116,7 @@ class NormalUserTest(TestCase):
         )
 
         url = reverse('layer_metadata', args=[saved_layer.service_typename])
-        resp = client.get(url)
+        resp = self.client.get(url)
         self.assertEquals(resp.status_code, 200)
 
 
@@ -506,9 +511,8 @@ class GeoNodeMapTest(TestCase):
         """Regression-test for failures caused by zero-width bounding boxes"""
         thefile = os.path.join(gisdata.VECTOR_DATA, 'single_point.shp')
         uploaded = file_upload(thefile, overwrite=True)
-        client = Client()
-        client.login(username='norman', password='norman')
-        resp = client.get(uploaded.get_absolute_url())
+        self.client.login(username='norman', password='norman')
+        resp = self.client.get(uploaded.get_absolute_url())
         self.assertEquals(resp.status_code, 200)
 
     def test_layer_replace(self):
@@ -522,14 +526,13 @@ class GeoNodeMapTest(TestCase):
         raster_file = os.path.join(gisdata.RASTER_DATA, 'test_grid.tif')
         raster_layer = file_upload(raster_file, overwrite=True)
 
-        c = Client()
-        c.login(username='admin', password='admin')
+        self.client.login(username='admin', password='admin')
 
         # test the program can determine the original layer in raster type
         raster_replace_url = reverse(
             'layer_replace', args=[
                 raster_layer.service_typename])
-        response = c.get(raster_replace_url)
+        response = self.client.get(raster_replace_url)
         self.assertEquals(response.status_code, 200)
         self.assertEquals(response.context['is_featuretype'], False)
 
@@ -537,17 +540,17 @@ class GeoNodeMapTest(TestCase):
         vector_replace_url = reverse(
             'layer_replace', args=[
                 vector_layer.service_typename])
-        response = c.get(vector_replace_url)
+        response = self.client.get(vector_replace_url)
         self.assertEquals(response.status_code, 200)
         self.assertEquals(response.context['is_featuretype'], True)
 
         # test replace a vector with a raster
-        response = c.post(
+        response = self.client.post(
             vector_replace_url, {
                 'base_file': open(
                     raster_file, 'rb')})
         # TODO: This should really return a 400 series error with the json dict
-        self.assertEquals(response.status_code, 500)
+        self.assertEquals(response.status_code, 400)
         response_dict = json.loads(response.content)
         self.assertEquals(response_dict['success'], False)
 
@@ -561,11 +564,13 @@ class GeoNodeMapTest(TestCase):
         layer_shx = open(layer_path + '.shx', 'rb')
         layer_prj = open(layer_path + '.prj', 'rb')
 
-        response = c.post(vector_replace_url, {'base_file': layer_base,
-                                               'dbf_file': layer_dbf,
-                                               'shx_file': layer_shx,
-                                               'prj_file': layer_prj
-                                               })
+        response = self.client.post(
+            vector_replace_url,
+            {'base_file': layer_base,
+             'dbf_file': layer_dbf,
+             'shx_file': layer_shx,
+             'prj_file': layer_prj
+             })
         self.assertEquals(response.status_code, 200)
         response_dict = json.loads(response.content)
         self.assertEquals(response_dict['success'], True)
@@ -581,15 +586,202 @@ class GeoNodeMapTest(TestCase):
         self.assertNotEqual(vector_layer.bbox_y1, new_vector_layer.bbox_y1)
 
         # test an invalid user without layer replace permission
-        c.logout()
-        c.login(username='norman', password='norman')
+        self.client.logout()
+        self.client.login(username='norman', password='norman')
 
-        response = c.post(vector_replace_url, {'base_file': layer_base,
-                                               'dbf_file': layer_dbf,
-                                               'shx_file': layer_shx,
-                                               'prj_file': layer_prj
-                                               })
-        self.assertEquals(response.status_code, 302)
+        response = self.client.post(
+            vector_replace_url,
+            {'base_file': layer_base,
+             'dbf_file': layer_dbf,
+             'shx_file': layer_shx,
+             'prj_file': layer_prj
+             })
+        self.assertEquals(response.status_code, 401)
+
+
+class GeoNodePermissionsTest(TestCase):
+
+    """Tests GeoNode permissions and its integration with GeoServer
+    """
+
+    def setUp(self):
+        call_command('loaddata', 'people_data', verbosity=0)
+
+    def tearDown(self):
+        pass
+
+    def test_permissions(self):
+        """Test permissions on a layer
+        """
+
+        # grab norman
+        norman = get_user_model().objects.get(username="norman")
+
+        thefile = os.path.join(
+            gisdata.VECTOR_DATA,
+            'san_andres_y_providencia_poi.shp')
+        layer = file_upload(thefile, overwrite=True)
+        check_layer(layer)
+
+        # we need some time to have the service up and running
+        time.sleep(20)
+
+        # Set the layer private for not authenticated users
+        layer.set_permissions({'users': {'AnonymousUser': []}})
+
+        url = 'http://localhost:8080/geoserver/geonode/wms?' \
+            'LAYERS=geonode%3Asan_andres_y_providencia_poi&STYLES=' \
+            '&FORMAT=image%2Fpng&SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap' \
+            '&SRS=EPSG%3A4326' \
+            '&BBOX=-81.394599749999,13.316009005566,' \
+            '-81.370560451855,13.372728455566' \
+            '&WIDTH=217&HEIGHT=512'
+
+        # test view_resourcebase permission on anonymous user
+        request = urllib2.Request(url)
+        response = urllib2.urlopen(request)
+        self.assertTrue(
+            response.info().getheader('Content-Type'),
+            'application/vnd.ogc.se_xml;charset=UTF-8'
+        )
+
+        # test WMS with authenticated user that has not view_resourcebase:
+        # the layer must be not accessible (response is xml)
+        request = urllib2.Request(url)
+        base64string = base64.encodestring(
+            '%s:%s' % ('norman', 'norman')).replace('\n', '')
+        request.add_header("Authorization", "Basic %s" % base64string)
+        response = urllib2.urlopen(request)
+        self.assertTrue(
+            response.info().getheader('Content-Type'),
+            'application/vnd.ogc.se_xml;charset=UTF-8'
+        )
+
+        # test WMS with authenticated user that has view_resourcebase: the layer
+        # must be accessible (response is image)
+        assign_perm('view_resourcebase', norman, layer.get_self_resource())
+        request = urllib2.Request(url)
+        base64string = base64.encodestring(
+            '%s:%s' % ('norman', 'norman')).replace('\n', '')
+        request.add_header("Authorization", "Basic %s" % base64string)
+        response = urllib2.urlopen(request)
+        self.assertTrue(response.info().getheader('Content-Type'), 'image/png')
+
+        # test change_layer_data
+        # would be nice to make a WFS/T request and test results, but this
+        # would work only on PostGIS layers
+
+        # test change_layer_style
+        url = 'http://localhost:8000/gs/rest/styles/san_andres_y_providencia_poi.xml'
+        sld = """<?xml version="1.0" encoding="UTF-8"?>
+<sld:StyledLayerDescriptor xmlns:sld="http://www.opengis.net/sld"
+xmlns:gml="http://www.opengis.net/gml" xmlns:ogc="http://www.opengis.net/ogc"
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.0.0"
+xsi:schemaLocation="http://www.opengis.net/sld http://schemas.opengis.net/sld/1.0.0/StyledLayerDescriptor.xsd">
+   <sld:NamedLayer>
+      <sld:Name>geonode:san_andres_y_providencia_poi</sld:Name>
+      <sld:UserStyle>
+         <sld:Name>san_andres_y_providencia_poi</sld:Name>
+         <sld:Title>san_andres_y_providencia_poi</sld:Title>
+         <sld:IsDefault>1</sld:IsDefault>
+         <sld:FeatureTypeStyle>
+            <sld:Rule>
+               <sld:PointSymbolizer>
+                  <sld:Graphic>
+                     <sld:Mark>
+                        <sld:Fill>
+                           <sld:CssParameter name="fill">#8A7700
+                           </sld:CssParameter>
+                        </sld:Fill>
+                        <sld:Stroke>
+                           <sld:CssParameter name="stroke">#bbffff
+                           </sld:CssParameter>
+                        </sld:Stroke>
+                     </sld:Mark>
+                     <sld:Size>10</sld:Size>
+                  </sld:Graphic>
+               </sld:PointSymbolizer>
+            </sld:Rule>
+         </sld:FeatureTypeStyle>
+      </sld:UserStyle>
+   </sld:NamedLayer>
+</sld:StyledLayerDescriptor>"""
+
+        # user without change_layer_style cannot edit it
+        self.client.login(username='norman', password='norman')
+        response = self.client.put(url, sld, content_type='application/vnd.ogc.sld+xml')
+        self.assertEquals(response.status_code, 401)
+
+        # user with change_layer_style can edit it
+        assign_perm('change_layer_style', norman, layer)
+        response = self.client.put(url, sld, content_type='application/vnd.ogc.sld+xml')
+        self.assertEquals(response.status_code, 200)
+
+        # Clean up and completely delete the layer
+        layer.delete()
+
+    def test_unpublished(self):
+        """Test permissions on an unpublished layer
+        """
+
+        thefile = os.path.join(
+            gisdata.VECTOR_DATA,
+            'san_andres_y_providencia_poi.shp')
+        layer = file_upload(thefile, overwrite=True)
+        check_layer(layer)
+
+        # we need some time to have the service up and running
+        time.sleep(20)
+
+        # request getCapabilities: layer must be there as it is published and
+        # advertised: we need to check if in response there is
+        # <Name>geonode:san_andres_y_providencia_water</Name>
+        url = 'http://localhost:8080/geoserver/ows?' \
+            'service=wms&version=1.3.0&request=GetCapabilities'
+        str_to_check = '<Name>geonode:san_andres_y_providencia_poi</Name>'
+        request = urllib2.Request(url)
+        response = urllib2.urlopen(request)
+        self.assertTrue(any(str_to_check in s for s in response.readlines()))
+
+        # by default the uploaded layer is
+        self.assertTrue(layer.is_published, True)
+
+        # Clean up and completely delete the layer
+        layer.delete()
+
+        # with settings disabled
+        with self.settings(RESOURCE_PUBLISHING=True):
+
+            thefile = os.path.join(
+                gisdata.VECTOR_DATA,
+                'san_andres_y_providencia_administrative.shp')
+            layer = file_upload(thefile, overwrite=True)
+            check_layer(layer)
+
+            # we need some time to have the service up and running
+            time.sleep(20)
+
+            str_to_check = '<Name>san_andres_y_providencia_administrative</Name>'
+
+            # by default the uploaded layer must be unpublished
+            self.assertEqual(layer.is_published, False)
+
+            # check the layer is not in GetCapabilities
+            request = urllib2.Request(url)
+            response = urllib2.urlopen(request)
+            self.assertFalse(any(str_to_check in s for s in response.readlines()))
+
+            # now test with published layer
+            resource = layer.get_self_resource()
+            resource.is_published = True
+            resource.save()
+
+            request = urllib2.Request(url)
+            response = urllib2.urlopen(request)
+            self.assertTrue(any(str_to_check in s for s in response.readlines()))
+
+            # Clean up and completely delete the layer
+            layer.delete()
 
 
 class GeoNodeThumbnailTest(TestCase):
@@ -607,8 +799,7 @@ class GeoNodeThumbnailTest(TestCase):
         """Test the layer save method generates a thumbnail link
         """
 
-        client = Client()
-        client.login(username='norman', password='norman')
+        self.client.login(username='norman', password='norman')
 
         # TODO: Would be nice to ensure the name is available before
         # running the test...
@@ -629,8 +820,7 @@ class GeoNodeThumbnailTest(TestCase):
     def test_map_thumbnail(self):
         """Test the map save method generates a thumbnail link
         """
-        client = Client()
-        client.login(username='norman', password='norman')
+        self.client.login(username='norman', password='norman')
 
         # TODO: Would be nice to ensure the name is available before
         # running the test...
@@ -673,8 +863,7 @@ class GeoNodeMapPrintTest(TestCase):
             # STEP 1: Import a layer
             from geonode.maps.models import Map
 
-            client = Client()
-            client.login(username='norman', password='norman')
+            self.client.login(username='norman', password='norman')
 
             # TODO: Would be nice to ensure the name is available before
             # running the test...
@@ -697,12 +886,12 @@ class GeoNodeMapPrintTest(TestCase):
                     saved_layer.service_typename])
 
             # check is accessible while logged in
-            resp = client.get(url)
+            resp = self.client.get(url)
             self.assertEquals(resp.status_code, 200)
 
             # check is inaccessible when not logged in
-            client.logout()
-            resp = client.get(url)
+            self.client.logout()
+            resp = self.client.get(url)
             self.assertEquals(resp.status_code, 302)
 
             # STEP 2: Create a Map with that layer
@@ -737,11 +926,53 @@ class GeoNodeMapPrintTest(TestCase):
                 'srs': 'EPSG:900913',
                 'units': 'm'}
 
-            client.post(print_url, post_payload)
+            self.client.post(print_url, post_payload)
 
             # Test the layer is still inaccessible as non authenticated
-            resp = client.get(url)
+            resp = self.client.get(url)
             self.assertEquals(resp.status_code, 302)
 
         else:
             pass
+
+
+class GeoNodeGeoServerSync(TestCase):
+
+    """Tests GeoNode/GeoServer syncronization
+    """
+
+    def setUp(self):
+        call_command('loaddata', 'people_data', verbosity=0)
+
+    def tearDown(self):
+        pass
+
+    def test_set_attributes(self):
+        """Test attributes syncronization
+        """
+
+        # upload a shapefile
+        shp_file = os.path.join(
+            gisdata.VECTOR_DATA,
+            'san_andres_y_providencia_poi.shp')
+        layer = file_upload(shp_file)
+
+        # set attributes for resource
+        for attribute in layer.attribute_set.all():
+            attribute.attribute_label = '%s_label' % attribute.attribute
+            attribute.description = '%s_description' % attribute.attribute
+            attribute.save()
+
+        # sync the attributes with GeoServer
+        set_attributes(layer)
+
+        # tests if everything is synced properly
+        for attribute in layer.attribute_set.all():
+            self.assertEquals(
+                attribute.attribute_label,
+                '%s_label' % attribute.attribute
+            )
+            self.assertEquals(
+                attribute.description,
+                '%s_description' % attribute.attribute
+            )
