@@ -143,7 +143,10 @@ setup(name='GeoNode',
         # datetimepicker widget
         "django-bootstrap3-datetimepicker==2.2.3",
         "flake8==2.3.0",
-        "pep8==1.6.2"
+        "pep8==1.6.2",
+
+        # DoS Custom
+        "git+https://github.com/ROGUE-JCTD/django-maploom@master"
         ],
       zip_safe=False,
       )
