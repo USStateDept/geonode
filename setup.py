@@ -127,7 +127,7 @@ setup(name='GeoNode',
         "geonode-notification==1.1.1",
         "geonode-dialogos==0.4",
         "gsconfig==0.6.13",
-        "gsimporter==0.1",
+        "git+https://github.com/boundlessgeo/gsimporter.git",
         "gisdata==0.5.4",
 
         # geopython dependencies
