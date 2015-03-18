@@ -146,7 +146,8 @@ setup(name='GeoNode',
         "pep8==1.6.2",
 
         # DoS Custom
-        "git+https://github.com/ROGUE-JCTD/django-maploom@master"
+        "git+https://github.com/ROGUE-JCTD/django-maploom@master",
+        "https://github.com/garnertb/django-classification-banner/archive/v0.1.4.zip"
         ],
       zip_safe=False,
       )
